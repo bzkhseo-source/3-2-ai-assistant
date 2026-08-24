@@ -5,7 +5,8 @@ let currentChartAsset = "금";
 let currentCurrency = "USD";
 let usdToKrwRate = 1350; // API 실패 시 사용할 대체 환율
 let lastSummaryData = null;
-
+let filterStartDate = null;
+let filterEndDate = null;
 // ============ 초기화 ============
 document.addEventListener("DOMContentLoaded", () => {
   initDarkMode();
@@ -13,7 +14,7 @@ document.addEventListener("DOMContentLoaded", () => {
   loadSummary();
   loadDataList();
   loadConversations();
-
+  document.getElementById("syncLatestBtn").addEventListener("click", syncLatestPrices);
   document.getElementById("chatSendBtn").addEventListener("click", sendChatMessage);
   document.getElementById("chatInput").addEventListener("keydown", (e) => {
     if (e.key === "Enter") sendChatMessage();
@@ -22,7 +23,8 @@ document.addEventListener("DOMContentLoaded", () => {
   document.getElementById("dataForm").addEventListener("submit", handleAddData);
   document.getElementById("exportCsvBtn").addEventListener("click", exportCSV);
   document.getElementById("exportJsonBtn").addEventListener("click", exportJSON);
-
+  document.getElementById("applyDateFilterBtn").addEventListener("click", applyDateFilter);
+  document.getElementById("resetDateFilterBtn").addEventListener("click", resetDateFilter);
   document.querySelectorAll(".chip[data-asset]").forEach((chip) => {
     chip.addEventListener("click", () => {
       document.querySelectorAll(".chip[data-asset]").forEach((c) => c.classList.remove("active"));
@@ -43,6 +45,93 @@ document.addEventListener("DOMContentLoaded", () => {
     });
   });
 });
+
+// ============ 야후 파이낸스 최신 시세 동기화 ============
+async function syncLatestPrices() {
+  const btn = document.getElementById("syncLatestBtn");
+  const status = document.getElementById("syncStatus");
+
+  btn.disabled = true;
+  status.textContent = "최신 시세를 가져오는 중...";
+
+  try {
+    const res = await fetch(`${API_BASE_URL}/api/data/sync-latest`, { method: "POST" });
+    if (!res.ok) throw new Error("동기화 요청 실패");
+
+    const result = await res.json();
+    const addedCount = result.added.length;
+    const skippedCount = result.skipped.length;
+
+    if (addedCount > 0) {
+      status.textContent = `${addedCount}건 추가됨 (${result.added.map(a => a.memo).join(", ")})`;
+      await loadDataList();
+      await loadSummary();
+    } else {
+      status.textContent = "새로운 시세가 없습니다 (이미 최신 상태).";
+    }
+
+    if (skippedCount > 0) {
+      console.log("건너뛴 항목:", result.skipped);
+    }
+  } catch (err) {
+    status.textContent = "동기화 실패: " + err.message;
+  } finally {
+    btn.disabled = false;
+    setTimeout(() => { status.textContent = ""; }, 5000);
+  }
+}
+
+// ============ 기간 필터 ============
+function applyDateFilter() {
+  const start = document.getElementById("filterStartDate").value;
+  const end = document.getElementById("filterEndDate").value;
+
+  if (!start && !end) {
+    alert("시작일 또는 종료일을 하나 이상 선택해주세요.");
+    return;
+  }
+  if (start && end && start > end) {
+    alert("시작일이 종료일보다 늦을 수 없습니다.");
+    return;
+  }
+
+  filterStartDate = start || null;
+  filterEndDate = end || null;
+
+  updateFilterStatus();
+  renderDataTable();
+  drawChart();
+}
+
+function resetDateFilter() {
+  filterStartDate = null;
+  filterEndDate = null;
+  document.getElementById("filterStartDate").value = "";
+  document.getElementById("filterEndDate").value = "";
+  updateFilterStatus();
+  renderDataTable();
+  drawChart();
+}
+
+function updateFilterStatus() {
+  const el = document.getElementById("filterStatus");
+  if (!filterStartDate && !filterEndDate) {
+    el.textContent = "";
+    return;
+  }
+  const s = filterStartDate || "처음";
+  const e = filterEndDate || "최근";
+  el.textContent = `${s} ~ ${e} 조회 중`;
+}
+
+function getFilteredRecords() {
+  return allDataRecords.filter((r) => {
+    if (filterStartDate && r.date < filterStartDate) return false;
+    if (filterEndDate && r.date > filterEndDate) return false;
+    return true;
+  });
+}
+
 
 // ============ 다크모드 ============
 function initDarkMode() {
@@ -180,8 +269,14 @@ function renderDataTable() {
     return;
   }
 
-  // 최신 50개만 테이블에 표시 (전체는 차트/요약에 반영, 테이블은 가독성을 위해 제한)
-  const sorted = [...allDataRecords].sort((a, b) => (a.date < b.date ? 1 : -1));
+  const filteredRecords = getFilteredRecords();
+  if (filteredRecords.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="4" class="loading-text">해당 기간에 데이터가 없습니다.</td></tr>`;
+    return;
+  }
+
+  // 최신 50개만 테이블에 표시 (필터 적용 후 기준)
+  const sorted = [...filteredRecords].sort((a, b) => (a.date < b.date ? 1 : -1));
   const recent = sorted.slice(0, 50);
 
   tbody.innerHTML = recent.map((item) => `
@@ -248,7 +343,7 @@ function drawChart() {
   ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
   ctx.clearRect(0, 0, cssWidth, cssHeight);
 
-  const filtered = allDataRecords
+  const filtered = getFilteredRecords()
     .filter((r) => r.memo === currentChartAsset)
     .sort((a, b) => (a.date > b.date ? 1 : -1));
 

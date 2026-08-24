@@ -25,6 +25,16 @@
 
     <!-- 그래프 -->
     <section class="card chart-card">
+      <div class="date-filter-row">
+        <label for="filterStartDate">시작일</label>
+        <input type="date" id="filterStartDate" />
+        <label for="filterEndDate">종료일</label>
+        <input type="date" id="filterEndDate" />
+        <button id="applyDateFilterBtn" class="small-btn">조회</button>
+        <button id="resetDateFilterBtn" class="small-btn">전체 기간</button>
+        <span id="filterStatus" class="filter-status"></span>
+       </div>
+  
       <div class="chart-header">
         <h2>시세 추이</h2>
         <div class="chart-controls">
@@ -64,6 +74,10 @@
     <!-- 데이터 관리 -->
     <section class="card data-card">
       <h2>데이터 관리</h2>
+       <div class="sync-row">
+       <button id="syncLatestBtn" class="small-btn">최신 시세 가져오기</button>
+       <span id="syncStatus" class="filter-status"></span>
+  </div>
       <form id="dataForm" class="data-form">
         <input type="date" id="dataDate" aria-label="날짜" required />
         <input type="number" id="dataValue" step="0.01" placeholder="시세" aria-label="시세 값" required />
