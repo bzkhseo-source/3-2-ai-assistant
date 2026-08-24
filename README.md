@@ -139,6 +139,103 @@ models/ # Pydantic 요청/응답 스키마
 - 서비스 계정 인증 방식: Firebase 콘솔에서 발급한 서비스 계정 키(JSON)를 PowerShell로 한 줄 문자열로 압축(`ConvertFrom-Json | ConvertTo-Json -Compress`)하여 `.env`의 `FIREBASE_SERVICE_ACCOUNT_JSON`에 저장, 코드에서 파싱하여 `firebase_admin.initialize_app()`으로 초기화
 - 보안 규칙: 개발 단계에서는 테스트 모드로 설정, 실제 서비스에서는 백엔드 API를 통해서만 접근하도록 구성
 
+## 컨텍스트 주입의 한계와 완화 방안
+
+이 서비스의 핵심인 "데이터 요약을 시스템 프롬프트에 주입하는 방식"에는 아래와 같은
+구조적 한계가 있으며, 이를 인지하고 아래처럼 완화하고 있습니다.
+
+| 한계 | 설명 | 완화 방안 |
+|---|---|---|
+| 토큰/컨텍스트 한도 | 데이터가 계속 누적되면 요약 자체가 커져 시스템 프롬프트가 비대해질 수 있음 | 원본 레코드 전체가 아니라 `calculate_summary()`가 계산한 통계 요약(평균/최대/최소/추세 등)만 주입 — 레코드 수가 늘어도 요약 크기는 거의 고정 |
+| 요약 시점과 실제 조회 시점의 시차 | 채팅 응답 생성 중 다른 곳에서 데이터가 바뀌면, 그 사이 시점의 요약을 근거로 답변할 수 있음 | 매 `/api/chat` 요청마다 요약을 새로 계산(캐시하지 않음)해 최신 상태를 최대한 반영. 실시간성이 중요한 경우 `use_tools=true`로 `get_data_summary`를 AI가 직접 재조회하도록 유도 가능 |
+| 개인정보/민감정보 노출 | 시스템 프롬프트에 들어가는 데이터가 AI 제공사 서버로 전송됨 | 본 서비스는 개인 식별 정보가 아닌 시세 데이터(날짜/가격/구분)만 다루므로 프라이버시 리스크가 낮음. 다만 사용자가 개인 재무 데이터 등 민감한 값을 직접 입력할 경우, 별도 마스킹/필터링 로직은 아직 없어 향후 개선 과제로 남김 |
+| 요약 포맷의 일관성 | `calculate_summary()`가 반환하는 dict를 그대로 문자열 포매팅(`.format()`)에 사용하고 있어, 값이 비어있거나 구조가 바뀌면 프롬프트 텍스트가 부자연스러워질 수 있음 | `SYSTEM_PROMPT_TEMPLATE`은 각 필드에 기본값(`"정보 없음"`, `{}` 등)을 제공하여 빈 데이터에도 예외 없이 동작하도록 처리. 향후 dict를 사람이 읽기 좋은 문장으로 직렬화하는 별도 포맷터 도입을 고려 중 |
+| AI가 잘못된 근거로 답변할 가능성 | 통계 요약만 주입되므로, 특정 날짜의 세부 값처럼 요약에 없는 질문에는 AI가 추측성 답변을 할 수 있음 | Function Calling(`get_data_summary`, `get_conversation_history`)으로 AI가 필요 시 최신 데이터를 직접 조회하도록 하여 추측 답변 가능성을 낮춤 |
+
+## 서비스 계층 책임 (Service Layer Contracts)
+
+| 서비스 함수 | 책임 | 입력 | 출력 |
+|---|---|---|---|
+| `firestore_service.get_firestore_client()` | Firestore 클라이언트 싱글톤 초기화/반환 | 없음 (환경변수 `FIREBASE_SERVICE_ACCOUNT_JSON` 참조) | Firestore client 객체 |
+| `data_service.calculate_summary(records)` | 원본 레코드 목록을 받아 기간/개수/평균·최대·최소/추세/금은비율을 계산 | `list[dict]` — `{date, value, memo}` | `dict` — `{period, count, metrics, trend, ratio}` |
+| `data_service.calculate_statistics(records)` | 표준편차, 변동성(%), 최근 7일 변화율 계산 | `list[dict]` | `dict` — memo별 `{std_dev, volatility_pct, recent_7d_change_pct, latest_value, latest_date}` |
+| `ai.factory.get_ai_provider()` | `.env`의 `AI_PROVIDER` 값에 따라 Gemini/OpenAI 프로바이더 인스턴스 반환 | 없음 | `AIProvider` 구현체 |
+| `ai.base.AIProvider.chat()` / `.chat_with_tools()` | 시스템 프롬프트+기록+메시지를 받아 AI 응답 문자열 생성 | `system_prompt: str, user_message: str, history: list[dict]` | `str` (AI 응답) |
+
+## 요약 API 입력/출력 예시
+
+**`GET /api/data/summary`** — 입력 파라미터 없음
+
+```json
+{
+  "period": "2025-08-25 ~ 2026-08-24",
+  "count": 508,
+  "metrics": {
+    "금": { "count": 254, "average": 4373.09, "max": 5318.4, "min": 3373.8 },
+    "은": { "count": 254, "average": 65.88, "max": 115.08, "min": 38.58 }
+  },
+  "trend": { "금": "상승 (약 1.1%)", "은": "하락 (약 -6.6%)" },
+  "ratio": { "gold_silver_ratio": 97.3 }
+}
+```
+
+재사용 시나리오: 위 응답을 그대로 `SYSTEM_PROMPT_TEMPLATE.format(**summary)` 형태로 시스템
+프롬프트에 주입하거나, 프론트엔드 요약 카드 렌더링에 그대로 사용합니다.
+
+## 데이터 검증 규칙
+
+| 필드 | 서버(Pydantic) 검증 | 클라이언트 검증 |
+|---|---|---|
+| `date` | `str` 필수 (형식 강제는 하지 않음, `YYYY-MM-DD` 권장) | `<input type="date">`로 형식 강제 |
+| `value` | `float` 필수 | `parseFloat` 결과가 `NaN`이면 전송 차단 |
+| `memo` | `str` 필수 (자유 문자열이며 "금"/"은"으로 제한하지 않음) | `<select>`로 "금"/"은" 두 값만 선택 가능하도록 UI에서 제한 |
+
+> 현재는 `memo`에 임의 문자열이 서버로 들어올 수 있는 구조입니다. 요약/통계 계산은
+> `groupby(memo)` 방식이라 어떤 문자열이든 그룹으로 처리되지만, 프론트 UI를 우회한 직접
+> API 호출 시 "금"/"은" 외의 값이 들어갈 수 있는 점은 알려진 제한사항입니다.
+
+## 저장 실패 시 처리 정책
+
+- **데이터/대화 저장(POST)**: 요청 실패 시 `alert()`로 사용자에게 즉시 알리고, 폼 입력값은
+  초기화하지 않아 재시도가 가능합니다. 별도의 자동 재시도(retry)는 구현하지 않았습니다.
+- **원자성**: Firestore의 단일 문서 `set()`/`update()`는 그 자체로 원자적입니다. 다만
+  "대화 저장 성공 + summary 계산" 같은 여러 단계를 하나의 트랜잭션으로 묶지는 않았으므로,
+  중간 단계에서 실패하면 부분 반영될 수 있습니다. 현재 서비스 규모(개인 프로젝트, 단일 사용자
+  중심 데이터)에서는 리스크가 낮다고 판단해 별도 트랜잭션 처리는 적용하지 않았습니다.
+- **동시성**: 여러 클라이언트가 동시에 같은 데이터를 수정하는 시나리오는 고려하지 않았습니다
+  (Firestore의 last-write-wins 동작을 그대로 따릅니다).
+
+## 기간 필터 우선순위 및 동기화
+
+- **서버 측 `summary`(요약 카드)**: 항상 Firestore에 저장된 **전체 기간** 데이터를 기준으로 계산됩니다.
+- **클라이언트 측 기간 필터(차트/테이블)**: 사용자가 선택한 기간(`filterStartDate`~`filterEndDate`)은
+  프론트엔드에서만 적용되며, 서버의 `summary` 계산에는 영향을 주지 않습니다.
+- 즉, **기간 필터는 화면 표시 범위만 조정**하고, "데이터 요약" 카드는 항상 전체 기간 통계를 보여주는
+  것이 설계 의도입니다. 특정 기간만의 통계가 필요하다면 별도 API(`/api/data/summary?start=&end=`)
+  확장이 필요하며, 현재는 미구현 상태입니다(향후 개선 과제).
+
+## 배포 및 운영 참고사항
+
+- **배포 상태 확인**: 프론트엔드(`https://gn-mission3-2-frontend.vercel.app`) 또는 백엔드
+  Swagger(`https://gn-mission3-2-ai-assistant.onrender.com/docs`)가 응답하지 않으면, Render
+  무료 티어의 콜드 스타트(최대 약 1분)일 가능성이 높습니다. 잠시 후 새로고침해주세요.
+  Render 대시보드의 서비스 상태는 `https://dashboard.render.com`에서 확인 가능합니다.
+- **콜드 스타트 완화**: 별도의 워밍(ping) 스케줄러는 구현하지 않았습니다. 무료 티어 특성상
+  주기적 핑을 걸어도 결국 슬립되므로, 현재는 프론트엔드에서 요청이 느릴 수 있다는 안내 문구로
+  대응하고 있습니다(README 상단 안내 참고).
+- **CORS 오리진 관리**: `ALLOWED_ORIGINS` 환경변수에는 로컬 개발 주소(`localhost:5500`)와
+  실제 배포된 Vercel 도메인만 등록되어 있으며, 와일드카드(`*`)는 사용하지 않습니다.
+- **비밀 관리**: 현재는 Render/Vercel의 환경변수 기능을 그대로 사용하고 있으며, 별도의 비밀
+  관리 서비스(AWS Secrets Manager 등)는 도입하지 않았습니다. 개인 학습 프로젝트 규모에서는
+  플랫폼 제공 환경변수로 충분하다고 판단했으나, 실서비스 확장 시에는 비밀 관리 서비스 도입과
+  서비스 계정 키의 최소 권한(least privilege) 설정을 권장합니다.
+
+## 알려진 제한사항 (Known Limitations)
+
+- 모바일 실기기에서의 터치 영역 접근성 검증은 아직 진행하지 않았습니다 (반응형 CSS만 적용, 실기기 테스트 미실시).
+- 네트워크 오류 시 자동 재시도 로직은 없으며, 사용자가 버튼을 다시 눌러야 합니다.
+- Firestore 쿼리에 별도 복합 인덱스를 설계하지 않았습니다 (현재 쿼리 패턴이 단순하여 자동 인덱스로 충분).
+
 ## 트러블슈팅 기록
 
 | 문제 | 원인 | 해결 |
