@@ -10,7 +10,8 @@
 | GitHub 저장소 | https://github.com/bzkhseo-source/3-2-ai-assistant |
 
 > 백엔드는 Render 무료 티어로 배포되어 있어, 미사용 시 슬립 모드로 전환됩니다.
-> 첫 요청 시 서버가 깨어나는 데 최대 1분 정도 걸릴 수 있습니다.
+> 첫 요청 시 서버가 깨어나는 데 최대 1분 정도 걸릴 수 있습니다. 배포 상태는
+> [Render 대시보드](https://dashboard.render.com)에서 별도로 확인 가능합니다.
 
 ## 요약
 
@@ -40,6 +41,41 @@
 - **Function Calling**: AI가 필요 시 `get_data_summary`, `get_conversation_history` 도구를 스스로 호출
 - **MCP Server**: 기존 FastAPI 엔드포인트를 그대로 감싸는 방식으로, 로직 중복 없이 외부 채널(MCP Inspector로 검증) 지원
 
+## 서비스 계층 책임 (Service Layer Contracts)
+
+| 서비스 함수 | 책임 | 입력 | 출력 |
+|---|---|---|---|
+| `firestore_service.get_firestore_client()` | Firestore 클라이언트 싱글톤 초기화/반환 | 없음 | Firestore client 객체 |
+| `data_service.calculate_summary(records)` | 기간/개수/평균·최대·최소/추세/금은비율 계산 | `list[dict]` — `{date, value, memo}` | `dict` — `{period, count, metrics, trend, ratio}` |
+| `data_service.calculate_statistics(records)` | 표준편차, 변동성(%), 최근 7일 변화율 계산 | `list[dict]` | `dict` — memo별 통계 |
+| `ai.factory.get_ai_provider()` | `AI_PROVIDER` 값에 따라 Gemini/OpenAI 프로바이더 반환 | 없음 | `AIProvider` 구현체 |
+| `ai.base.AIProvider.chat()` / `.chat_with_tools()` | 시스템 프롬프트+기록+메시지로 AI 응답 생성 | `system_prompt, user_message, history` | `str` |
+
+## 컨텍스트 주입의 한계와 완화 방안
+
+| 한계 | 완화 방안 |
+|---|---|
+| 데이터 누적 시 프롬프트 비대화 우려 | 원본 레코드가 아닌 계산된 통계 요약만 주입 — 레코드 수 무관하게 요약 크기 고정 |
+| 요약 시점과 조회 시점의 시차 | 매 `/api/chat` 요청마다 요약 재계산(캐시 없음), 필요 시 `use_tools=true`로 AI가 직접 재조회 |
+| 시스템 프롬프트가 외부 AI 서버로 전송됨 | 개인 식별 정보가 아닌 시세 데이터만 다뤄 리스크 낮음 (민감정보 마스킹은 향후 과제) |
+| 요약 dict를 문자열 포매팅에 직접 사용 | 각 필드에 기본값 제공(`"정보 없음"` 등)으로 빈 데이터에도 예외 없이 동작 |
+| 요약에 없는 세부 질문에 추측 답변 가능성 | Function Calling으로 AI가 필요 시 최신 데이터를 직접 조회하도록 유도 |
+
+## 운영 참고사항
+
+- **저장 실패 처리**: 실패 시 `alert()`로 즉시 알림, 자동 재시도는 미구현 (수동 재시도 가능)
+- **동시성**: Firestore의 last-write-wins 동작을 그대로 따름 (별도 트랜잭션 처리 없음)
+- **기간 필터 vs 전체 요약**: "데이터 요약" 카드는 항상 전체 기간 기준, 차트/테이블의 기간 필터는 화면 표시 범위만 조정 (서버 요약 계산에는 영향 없음)
+- **CORS**: `ALLOWED_ORIGINS`에 로컬 개발 주소와 실제 배포 도메인만 등록, 와일드카드 미사용
+- **비밀 관리**: Render/Vercel 환경변수 기능을 그대로 사용 (별도 비밀 관리 서비스는 미도입)
+
+## 알려진 제한사항
+
+- 스크린리더 등 정식 접근성(a11y) 감사 도구를 이용한 검증은 아직 진행하지 않음 (모바일 반응형 화면은 실기기로 확인 완료)
+- 네트워크 오류 시 자동 재시도 로직 없음
+- `memo` 필드는 서버에서 "금"/"은"으로 제한하지 않음 (UI에서만 제한, API 직접 호출 시 임의 값 입력 가능)
+- 특정 기간만의 서버 통계 API(`/api/data/summary?start=&end=`)는 미구현
+
 ## 트러블슈팅 요약
 
 | 문제 | 해결 |
@@ -52,9 +88,14 @@
 
 ## 제출 스크린샷
 
-- `docs/screenshot-chat.png` — 데이터 요약이 반영된 채팅 화면 (질문+답변)
-- `docs/screenshot-data.png` — 데이터 관리 화면 (CRUD 및 야후 파이낸스 동기화 동작)
-- `docs/screenshot-conversations.png` — 대화 기록 목록 및 불러오기 동작
+| 파일 | 내용 |
+|---|---|
+| `docs/screenshot-chat.png` | 데이터 요약이 반영된 채팅 화면 (질문+답변) |
+| `docs/screenshot-data.png` | 데이터 관리 화면 (CRUD + 야후 파이낸스 동기화) |
+| `docs/screenshot-conversations.png` | 대화 기록 목록 및 불러오기 동작 |
+| `docs/screenshot-swagger.png` | 배포된 백엔드 Swagger UI (`/docs`) |
+| `docs/screenshot-desktop-full.png` | 데스크톱 전체 화면 (요약/차트/기간필터/채팅/대화기록/데이터관리) |
+| `docs/mobile/mobile-*.png` | 모바일(iPhone) 반응형 화면 5종 (요약, 차트, 채팅, 대화기록, 데이터관리) |
 
 ## 상세 내용
 
