@@ -16,7 +16,8 @@
 
 > ⚠️ 백엔드는 Render 무료 티어로 배포되어 있어, 일정 시간 미사용 시 슬립 모드로 전환됩니다.
 > 슬립 상태에서 첫 요청 시 서버가 깨어나는 데 약 30초~1분 정도 지연될 수 있습니다.
-> 화면이 바로 로딩되지 않으면 잠시 기다린 후 새로고침해주세요.
+> 화면이 바로 로딩되지 않으면 잠시 기다린 후 새로고침해주세요. 배포 상태 자체가 궁금하다면
+> [Render 대시보드](https://dashboard.render.com)에서 서비스 상태를 별도로 확인할 수 있습니다.
 
 ## 기술 스택
 
@@ -45,12 +46,14 @@
 - **외부 채널 연동**: `mcp_server/server.py`에 MCP(Model Context Protocol) 서버를 구현했습니다. FastAPI 엔드포인트(`/api/data/summary`, `/api/conversations`, `/api/chat`)를 그대로 감싸는 방식으로, 로직은 FastAPI 한 곳에만 두고 MCP는 외부 클라이언트용 창구 역할만 하도록 설계했습니다. MCP Inspector로 연결 및 도구 호출을 검증했습니다.
 
 **호출 흐름**
-사용자 질문
-→ AI가 필요 여부 판단
-→ (필요시) 내부 도구 호출: get_data_summary / get_conversation_history
-→ 도구 실행 결과를 AI에게 재전달
-→ AI가 최종 자연어 답변 생성
 
+```
+사용자 질문
+  → AI가 필요 여부 판단
+  → (필요시) 내부 도구 호출: get_data_summary / get_conversation_history
+  → 도구 실행 결과를 AI에게 재전달
+  → AI가 최종 자연어 답변 생성
+```
 
 **MCP 도구 목록**
 - `get_data_summary`: 저장된 금/은 시세 데이터의 요약 정보 조회
@@ -82,14 +85,15 @@ uvicorn app.main:app --reload
 ### 프론트엔드
 
 `frontend/index.html`을 VSCode의 Live Server 확장으로 열어주세요 (파일을 직접 더블클릭해서 여는 `file://` 방식은 CORS로 인해 데이터 로딩이 되지 않습니다).
-http://127.0.0.1:5500/frontend/index.html
 
+```
+http://127.0.0.1:5500/frontend/index.html
+```
 
 ### MCP 서버 (선택, 보너스 A 검증용)
 
 ```bash
 cd mcp_server
-python -m venv venv 대신 backend venv 재사용 가능
 pip install -r requirements.txt
 npx @modelcontextprotocol/inspector python server.py
 ```
@@ -115,44 +119,29 @@ API_BASE_URL=http://localhost:8000
 
 `AI_PROVIDER` 환경변수 값에 따라 Gemini/OpenAI 중 원하는 프로바이더를 런타임에 전환할 수 있도록
 전략 패턴(Strategy Pattern)으로 설계했습니다.
-app/services/ai/
-base.py # 공통 인터페이스(추상 클래스)
-gemini_provider.py # Gemini 구현체
-openai_provider.py # OpenAI 구현체
-factory.py # .env의 AI_PROVIDER 값을 보고 프로바이더 반환
-tools.py # Function Calling용 도구 정의 (프로바이더 독립적)
 
+```
+app/services/ai/
+  base.py              # 공통 인터페이스(추상 클래스)
+  gemini_provider.py   # Gemini 구현체
+  openai_provider.py   # OpenAI 구현체
+  factory.py           # .env의 AI_PROVIDER 값을 보고 프로바이더 반환
+  tools.py             # Function Calling용 도구 정의 (프로바이더 독립적)
+```
 
 개발 단계에서는 무료 티어가 넉넉한 Gemini(`gemini-3.5-flash-lite`)를 사용했고,
 `.env`의 `AI_PROVIDER` 값만 바꾸면 코드 수정 없이 OpenAI로 전환할 수 있습니다.
 
 ### 라우터/서비스 분리
+
+```
 app/
-routers/ # API 엔드포인트 (data, conversations, chat)
-services/ # 비즈니스 로직 (Firestore 연동, 데이터 요약/통계 계산, AI 호출)
-models/ # Pydantic 요청/응답 스키마
+  routers/     # API 엔드포인트 (data, conversations, chat)
+  services/    # 비즈니스 로직 (Firestore 연동, 데이터 요약/통계 계산, AI 호출)
+  models/      # Pydantic 요청/응답 스키마
+```
 
-
-## Firebase(Firestore) 설정 상세
-
-- Firestore Database를 사용하며, `data`(시세 데이터), `conversations`(대화 기록) 두 컬렉션으로 구성
-- 서비스 계정 인증 방식: Firebase 콘솔에서 발급한 서비스 계정 키(JSON)를 PowerShell로 한 줄 문자열로 압축(`ConvertFrom-Json | ConvertTo-Json -Compress`)하여 `.env`의 `FIREBASE_SERVICE_ACCOUNT_JSON`에 저장, 코드에서 파싱하여 `firebase_admin.initialize_app()`으로 초기화
-- 보안 규칙: 개발 단계에서는 테스트 모드로 설정, 실제 서비스에서는 백엔드 API를 통해서만 접근하도록 구성
-
-## 컨텍스트 주입의 한계와 완화 방안
-
-이 서비스의 핵심인 "데이터 요약을 시스템 프롬프트에 주입하는 방식"에는 아래와 같은
-구조적 한계가 있으며, 이를 인지하고 아래처럼 완화하고 있습니다.
-
-| 한계 | 설명 | 완화 방안 |
-|---|---|---|
-| 토큰/컨텍스트 한도 | 데이터가 계속 누적되면 요약 자체가 커져 시스템 프롬프트가 비대해질 수 있음 | 원본 레코드 전체가 아니라 `calculate_summary()`가 계산한 통계 요약(평균/최대/최소/추세 등)만 주입 — 레코드 수가 늘어도 요약 크기는 거의 고정 |
-| 요약 시점과 실제 조회 시점의 시차 | 채팅 응답 생성 중 다른 곳에서 데이터가 바뀌면, 그 사이 시점의 요약을 근거로 답변할 수 있음 | 매 `/api/chat` 요청마다 요약을 새로 계산(캐시하지 않음)해 최신 상태를 최대한 반영. 실시간성이 중요한 경우 `use_tools=true`로 `get_data_summary`를 AI가 직접 재조회하도록 유도 가능 |
-| 개인정보/민감정보 노출 | 시스템 프롬프트에 들어가는 데이터가 AI 제공사 서버로 전송됨 | 본 서비스는 개인 식별 정보가 아닌 시세 데이터(날짜/가격/구분)만 다루므로 프라이버시 리스크가 낮음. 다만 사용자가 개인 재무 데이터 등 민감한 값을 직접 입력할 경우, 별도 마스킹/필터링 로직은 아직 없어 향후 개선 과제로 남김 |
-| 요약 포맷의 일관성 | `calculate_summary()`가 반환하는 dict를 그대로 문자열 포매팅(`.format()`)에 사용하고 있어, 값이 비어있거나 구조가 바뀌면 프롬프트 텍스트가 부자연스러워질 수 있음 | `SYSTEM_PROMPT_TEMPLATE`은 각 필드에 기본값(`"정보 없음"`, `{}` 등)을 제공하여 빈 데이터에도 예외 없이 동작하도록 처리. 향후 dict를 사람이 읽기 좋은 문장으로 직렬화하는 별도 포맷터 도입을 고려 중 |
-| AI가 잘못된 근거로 답변할 가능성 | 통계 요약만 주입되므로, 특정 날짜의 세부 값처럼 요약에 없는 질문에는 AI가 추측성 답변을 할 수 있음 | Function Calling(`get_data_summary`, `get_conversation_history`)으로 AI가 필요 시 최신 데이터를 직접 조회하도록 하여 추측 답변 가능성을 낮춤 |
-
-## 서비스 계층 책임 (Service Layer Contracts)
+### 서비스 계층 책임 (Service Layer Contracts)
 
 | 서비스 함수 | 책임 | 입력 | 출력 |
 |---|---|---|---|
@@ -181,6 +170,19 @@ models/ # Pydantic 요청/응답 스키마
 
 재사용 시나리오: 위 응답을 그대로 `SYSTEM_PROMPT_TEMPLATE.format(**summary)` 형태로 시스템
 프롬프트에 주입하거나, 프론트엔드 요약 카드 렌더링에 그대로 사용합니다.
+
+## 컨텍스트 주입의 한계와 완화 방안
+
+이 서비스의 핵심인 "데이터 요약을 시스템 프롬프트에 주입하는 방식"에는 아래와 같은
+구조적 한계가 있으며, 이를 인지하고 아래처럼 완화하고 있습니다.
+
+| 한계 | 설명 | 완화 방안 |
+|---|---|---|
+| 토큰/컨텍스트 한도 | 데이터가 계속 누적되면 요약 자체가 커져 시스템 프롬프트가 비대해질 수 있음 | 원본 레코드 전체가 아니라 `calculate_summary()`가 계산한 통계 요약(평균/최대/최소/추세 등)만 주입 — 레코드 수가 늘어도 요약 크기는 거의 고정 |
+| 요약 시점과 실제 조회 시점의 시차 | 채팅 응답 생성 중 다른 곳에서 데이터가 바뀌면, 그 사이 시점의 요약을 근거로 답변할 수 있음 | 매 `/api/chat` 요청마다 요약을 새로 계산(캐시하지 않음)해 최신 상태를 최대한 반영. 실시간성이 중요한 경우 `use_tools=true`로 `get_data_summary`를 AI가 직접 재조회하도록 유도 가능 |
+| 개인정보/민감정보 노출 | 시스템 프롬프트에 들어가는 데이터가 AI 제공사 서버로 전송됨 | 본 서비스는 개인 식별 정보가 아닌 시세 데이터(날짜/가격/구분)만 다루므로 프라이버시 리스크가 낮음. 다만 사용자가 개인 재무 데이터 등 민감한 값을 직접 입력할 경우, 별도 마스킹/필터링 로직은 아직 없어 향후 개선 과제로 남김 |
+| 요약 포맷의 일관성 | `calculate_summary()`가 반환하는 dict를 그대로 문자열 포매팅(`.format()`)에 사용하고 있어, 값이 비어있거나 구조가 바뀌면 프롬프트 텍스트가 부자연스러워질 수 있음 | `SYSTEM_PROMPT_TEMPLATE`은 각 필드에 기본값(`"정보 없음"`, `{}` 등)을 제공하여 빈 데이터에도 예외 없이 동작하도록 처리. 향후 dict를 사람이 읽기 좋은 문장으로 직렬화하는 별도 포맷터 도입을 고려 중 |
+| AI가 잘못된 근거로 답변할 가능성 | 통계 요약만 주입되므로, 특정 날짜의 세부 값처럼 요약에 없는 질문에는 AI가 추측성 답변을 할 수 있음 | Function Calling(`get_data_summary`, `get_conversation_history`)으로 AI가 필요 시 최신 데이터를 직접 조회하도록 하여 추측 답변 가능성을 낮춤 |
 
 ## 데이터 검증 규칙
 
@@ -214,15 +216,20 @@ models/ # Pydantic 요청/응답 스키마
   것이 설계 의도입니다. 특정 기간만의 통계가 필요하다면 별도 API(`/api/data/summary?start=&end=`)
   확장이 필요하며, 현재는 미구현 상태입니다(향후 개선 과제).
 
+## Firebase(Firestore) 설정 상세
+
+- Firestore Database를 사용하며, `data`(시세 데이터), `conversations`(대화 기록) 두 컬렉션으로 구성
+- 서비스 계정 인증 방식: Firebase 콘솔에서 발급한 서비스 계정 키(JSON)를 PowerShell로 한 줄 문자열로 압축(`ConvertFrom-Json | ConvertTo-Json -Compress`)하여 `.env`의 `FIREBASE_SERVICE_ACCOUNT_JSON`에 저장, 코드에서 파싱하여 `firebase_admin.initialize_app()`으로 초기화
+- 보안 규칙: 개발 단계에서는 테스트 모드로 설정, 실제 서비스에서는 백엔드 API를 통해서만 접근하도록 구성
+
 ## 배포 및 운영 참고사항
 
-- **배포 상태 확인**: 프론트엔드(`https://gn-mission3-2-frontend.vercel.app`) 또는 백엔드
-  Swagger(`https://gn-mission3-2-ai-assistant.onrender.com/docs`)가 응답하지 않으면, Render
-  무료 티어의 콜드 스타트(최대 약 1분)일 가능성이 높습니다. 잠시 후 새로고침해주세요.
-  Render 대시보드의 서비스 상태는 `https://dashboard.render.com`에서 확인 가능합니다.
+- **배포 상태 확인**: 프론트엔드 또는 백엔드 Swagger가 응답하지 않으면, Render 무료 티어의
+  콜드 스타트(최대 약 1분)일 가능성이 높습니다. 잠시 후 새로고침해주세요. Render 대시보드의
+  서비스 상태는 `https://dashboard.render.com`에서 확인 가능합니다.
 - **콜드 스타트 완화**: 별도의 워밍(ping) 스케줄러는 구현하지 않았습니다. 무료 티어 특성상
   주기적 핑을 걸어도 결국 슬립되므로, 현재는 프론트엔드에서 요청이 느릴 수 있다는 안내 문구로
-  대응하고 있습니다(README 상단 안내 참고).
+  대응하고 있습니다(본 문서 상단 안내 참고).
 - **CORS 오리진 관리**: `ALLOWED_ORIGINS` 환경변수에는 로컬 개발 주소(`localhost:5500`)와
   실제 배포된 Vercel 도메인만 등록되어 있으며, 와일드카드(`*`)는 사용하지 않습니다.
 - **비밀 관리**: 현재는 Render/Vercel의 환경변수 기능을 그대로 사용하고 있으며, 별도의 비밀
@@ -232,9 +239,11 @@ models/ # Pydantic 요청/응답 스키마
 
 ## 알려진 제한사항 (Known Limitations)
 
-- 모바일 실기기에서의 터치 영역 접근성 검증은 아직 진행하지 않았습니다 (반응형 CSS만 적용, 실기기 테스트 미실시).
+- 모바일 실기기(iPhone, 5G) 반응형 화면을 `docs/mobile/` 폴더에 캡처로 검증했습니다 (요약 카드, 시세 차트, 채팅, 대화 기록, 데이터 관리 5개 화면). 다만 스크린리더 등 정식 접근성(a11y) 감사 도구를 이용한 검증은 아직 진행하지 않았습니다.
 - 네트워크 오류 시 자동 재시도 로직은 없으며, 사용자가 버튼을 다시 눌러야 합니다.
 - Firestore 쿼리에 별도 복합 인덱스를 설계하지 않았습니다 (현재 쿼리 패턴이 단순하여 자동 인덱스로 충분).
+- `memo` 필드는 API 레벨에서 "금"/"은"으로 제한되어 있지 않습니다 (프론트 UI에서만 제한).
+- 특정 기간만의 서버 측 요약 통계 API는 아직 구현하지 않았습니다.
 
 ## 트러블슈팅 기록
 
@@ -245,12 +254,22 @@ models/ # Pydantic 요청/응답 스키마
 | Render 배포 실패 (`pywin32` 설치 오류) | Windows 로컬에서 생성한 `requirements.txt`에 Windows 전용 패키지(`pywin32`)가 포함되어 Linux 배포 환경에서 설치 실패 | `requirements.txt`에서 `pywin32==312; sys_platform == 'win32'` 형태로 조건부 설치 명시 |
 | MCP 서버 `ModuleNotFoundError: mcp.server.fastmcp` | MCP Python SDK가 2.0으로 업데이트되며 `mcp.server.fastmcp` 모듈이 제거되고 `MCPServer`로 변경됨 | 커뮤니티 표준 독립 패키지 `fastmcp`(PrefectHQ)로 전환, `from fastmcp import FastMCP`로 import 경로만 수정 |
 | 배포 사이트 좌측 상단에 의도치 않은 텍스트 노출 | `<head>` 태그 안에 실수로 `<th>` 태그(테이블 헤더용 코드)가 잘못 삽입되어, 브라우저가 이를 `<body>` 시작 지점으로 밀어내며 텍스트만 노출 | 해당 코드를 올바른 위치(`<thead>` 안)로 이동 |
+| `POST /api/data/sync-latest` 405 오류 | 배포된 프론트엔드가 이미 Render 백엔드를 바라보고 있었으나, 새로 추가한 엔드포인트 코드가 아직 배포에 반영되지 않음 | 변경된 백엔드 코드를 커밋/푸시하여 Render 재배포 |
 
 ## 제출 스크린샷
 
-- 데이터 요약이 보이는 채팅 화면 (질문+답변 포함): `docs/screenshot-chat.png`
-- 데이터 관리 화면 (CRUD 동작 확인): `docs/screenshot-data.png`
-- 대화 기록 화면 (불러오기 동작 확인): `docs/screenshot-conversations.png`
+| 파일 | 내용 |
+|---|---|
+| `docs/screenshot-chat.png` | 데이터 요약이 반영된 채팅 화면 (질문+답변) |
+| `docs/screenshot-data.png` | 데이터 관리 화면 (CRUD + 야후 파이낸스 동기화 동작) |
+| `docs/screenshot-conversations.png` | 대화 기록 목록 및 특정 대화 불러오기 동작 |
+| `docs/screenshot-swagger.png` | 배포된 백엔드 Swagger UI (`/docs`) |
+| `docs/screenshot-desktop-full.png` | 데스크톱 전체 화면 (요약/차트/기간필터/채팅/대화기록/데이터관리 통합) |
+| `docs/mobile/mobile-summary.png` | 모바일(iPhone) 데이터 요약 화면 |
+| `docs/mobile/mobile-chart.png` | 모바일 시세 추이 차트 화면 |
+| `docs/mobile/mobile-chat.png` | 모바일 AI 채팅 화면 |
+| `docs/mobile/mobile-conversations.png` | 모바일 대화 기록 화면 |
+| `docs/mobile/mobile-data.png` | 모바일 데이터 관리 화면 |
 
 ## 작성자
 
