@@ -61,21 +61,45 @@ def delete_data(item_id: str):
     doc_ref.delete()
     return {"message": "삭제되었습니다.", "id": item_id}
 
+from fastapi import APIRouter, HTTPException, Query
+from datetime import date as date_type
 
 @router.get("/summary")
-def get_summary():
-    """데이터 요약 (AI 프롬프트 주입용)"""
+def get_summary(
+    start: str | None = Query(None, description="조회 시작일 (YYYY-MM-DD), 생략 시 전체 기간"),
+    end: str | None = Query(None, description="조회 종료일 (YYYY-MM-DD), 생략 시 전체 기간"),
+):
+    """데이터 요약 (AI 프롬프트 주입용). start/end 지정 시 해당 기간만 집계한다."""
     db = get_firestore_client()
     docs = db.collection(COLLECTION_NAME).stream()
     records = [doc.to_dict() for doc in docs]
+
+    if start or end:
+        records = [
+            r for r in records
+            if (not start or r.get("date", "") >= start)
+            and (not end or r.get("date", "") <= end)
+        ]
+
     return calculate_summary(records)
 
 @router.get("/statistics")
-def get_statistics():
-    """추가 통계 지표 (보너스: 변동성, 최근 7일 변화율)"""
+def get_statistics(
+    start: str | None = Query(None, description="조회 시작일 (YYYY-MM-DD)"),
+    end: str | None = Query(None, description="조회 종료일 (YYYY-MM-DD)"),
+):
+    """추가 통계 지표 (보너스: 변동성, 최근 7일 변화율). start/end 지정 시 해당 기간만 집계한다."""
     db = get_firestore_client()
     docs = db.collection(COLLECTION_NAME).stream()
     records = [doc.to_dict() for doc in docs]
+
+    if start or end:
+        records = [
+            r for r in records
+            if (not start or r.get("date", "") >= start)
+            and (not end or r.get("date", "") <= end)
+        ]
+
     return calculate_statistics(records)
 
 @router.post("/sync-latest")
