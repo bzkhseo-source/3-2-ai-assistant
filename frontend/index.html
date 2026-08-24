@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>나만의 AI 비서 - 금/은 시세 분석</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Fraunces:wght@400;600&family=IBM+Plex+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+  <th id="valueColumnHeader">값</th>
+</head>
+<body>
+  <header class="app-header">
+    <h1>나만의 AI 비서 <span class="subtitle">금/은 시세 분석</span></h1>
+    <button id="darkModeToggle" class="icon-btn" title="다크모드 전환">🌙</button>
+  </header>
+
+  <main class="app-main">
+    <!-- 요약 카드 -->
+    <section class="card summary-card">
+      <h2>데이터 요약</h2>
+      <div id="summaryContent" class="summary-content">
+        <p class="loading-text">불러오는 중...</p>
+      </div>
+    </section>
+
+    <!-- 그래프 -->
+    <section class="card chart-card">
+      <div class="chart-header">
+        <h2>시세 추이</h2>
+        <div class="chart-controls">
+          <button class="chip currency-chip active" data-currency="USD">USD</button>
+          <button class="chip currency-chip" data-currency="KRW">KRW</button>
+          <button class="chip active" data-asset="금">금</button>
+          <button class="chip" data-asset="은">은</button>
+          <button id="exportCsvBtn" class="small-btn">CSV 내보내기</button>
+          <button id="exportJsonBtn" class="small-btn">JSON 내보내기</button>
+        </div>
+      </div>
+      <canvas id="priceChart" width="800" height="300"></canvas>
+    </section>
+
+    <div class="two-column">
+      <!-- 채팅 -->
+      <section class="card chat-card">
+        <h2>AI 비서와 대화하기</h2>
+        <div id="chatMessages" class="chat-messages"></div>
+        <div id="loadingIndicator" class="loading-indicator hidden">AI가 답변을 작성 중입니다...</div>
+        <div class="chat-input-row">
+          <input type="text" id="chatInput" placeholder="예: 이번 달 금 시세 어때?" />
+          <button id="chatSendBtn">전송</button>
+          <button id="newChatBtn" class="small-btn">새 대화</button>
+        </div>
+      </section>
+
+      <!-- 대화 기록 -->
+      <section class="card history-card">
+        <h2>대화 기록</h2>
+        <ul id="conversationList" class="conversation-list">
+          <li class="loading-text">불러오는 중...</li>
+        </ul>
+      </section>
+    </div>
+
+    <!-- 데이터 관리 -->
+    <section class="card data-card">
+      <h2>데이터 관리</h2>
+      <form id="dataForm" class="data-form">
+        <input type="date" id="dataDate" aria-label="날짜" required />
+        <input type="number" id="dataValue" step="0.01" placeholder="시세" aria-label="시세 값" required />
+        <select id="dataMemo" aria-label="구분 (금 또는 은)">
+          <option value="금">금</option>
+          <option value="은">은</option>
+        </select>
+        <button type="submit">추가</button>
+      </form>
+      <div class="table-wrapper">
+        <table id="dataTable">
+          <thead>
+            <tr>
+              <th>날짜</th>
+              <th>값</th>
+              <th>구분</th>
+              <th>작업</th>
+            </tr>
+          </thead>
+          <tbody id="dataTableBody">
+            <tr><td colspan="4" class="loading-text">불러오는 중...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="config.js"></script>
+  <script src="script.js"></script>
+</body>
+</html>

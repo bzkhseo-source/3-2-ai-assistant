@@ -1,0 +1,7 @@
+venv/
+__pycache__/
+*.pyc
+.env
+*firebase-adminsdk*.json
+seed_data.json
+.DS_Store
